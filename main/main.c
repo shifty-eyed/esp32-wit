@@ -34,6 +34,7 @@ const uint32_t c_uiBaud[10] = {0, 4800, 9600, 19200, 38400, 57600, 115200, 23040
 #define SERVER_IP "192.168.4.95"
 #define SERVER_PORT 9876
 static const char *TAG = "imu_tracker1";
+static const char *UDP_RECEIVER_TAG = "upd_receiver";
 static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 
@@ -95,46 +96,61 @@ static void Usart0_task(void *pvParameters)
 }
 
 static void udp_receive_task(void *pvParameters) {
-    char rx_buffer[1024];
-    struct sockaddr_in source_addr;
-    source_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    source_addr.sin_family = AF_INET;
-    source_addr.sin_port = htons(SERVER_PORT);
-
-    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
-    if (sock < 0) {
-        ESP_LOGE(TAG, "Unable to create socket: errno %d", errno);
-        vTaskDelete(NULL);
-    }
-
-    int err = bind(sock, (struct sockaddr *)&source_addr, sizeof(source_addr));
-    if (err < 0) {
-        ESP_LOGE(TAG, "Socket unable to bind: errno %d", errno);
-        close(sock);
-        vTaskDelete(NULL);
-    }
+    char rx_buffer[128];
+    char addr_str[128];
+    int addr_family;
+    int ip_protocol;
 
     while (1) {
-        ESP_LOGI(TAG, "Waiting for data");
-        socklen_t socklen = sizeof(source_addr);
-        int len = recvfrom(sock, rx_buffer, sizeof(rx_buffer) - 1, 0, (struct sockaddr *)&source_addr, &socklen);
-
-        if (len < 0) {
-            ESP_LOGE(TAG, "recvfrom failed: errno %d", errno);
+        struct sockaddr_in dest_addr;
+        dest_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        dest_addr.sin_family = AF_INET;
+        dest_addr.sin_port = htons(SERVER_PORT);
+        addr_family = AF_INET;
+        ip_protocol = IPPROTO_IP;
+        
+        int sock = socket(addr_family, SOCK_DGRAM, ip_protocol);
+        if (sock < 0) {
+            ESP_LOGE(UDP_RECEIVER_TAG, "Unable to create socket: errno %d", errno);
             break;
-        } else {
-            //rx_buffer[len] = 0; // Null-terminate the received data
-            ESP_LOGI(TAG, "Received %d bytes from %s:", len, inet_ntoa(source_addr.sin_addr));
-            ESP_LOGI(TAG, "%s", rx_buffer);
-			//CmdProcess(rx_buffer[0]);
+        }
+        ESP_LOGI(UDP_RECEIVER_TAG, "Socket created");
+
+        int err = bind(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+        if (err < 0) {
+            ESP_LOGE(UDP_RECEIVER_TAG, "Socket unable to bind: errno %d", errno);
+            break;
+        }
+        ESP_LOGI(UDP_RECEIVER_TAG, "Socket bound, port %d", SERVER_PORT);
+
+        while (1) {
+            ESP_LOGI(UDP_RECEIVER_TAG, "Waiting for data");
+            struct sockaddr_in6 source_addr;
+            socklen_t socklen = sizeof(source_addr);
+            int len = recvfrom(sock, rx_buffer, sizeof(rx_buffer) - 1, 0, (struct sockaddr *)&source_addr, &socklen);
+
+            if (len < 0) {
+                ESP_LOGE(UDP_RECEIVER_TAG, "recvfrom failed: errno %d", errno);
+                break;
+            } else {
+                // Null-terminate whatever we received and log it
+                rx_buffer[len] = 0;
+                inet_ntoa_r(((struct sockaddr_in *)&source_addr)->sin_addr.s_addr, addr_str, sizeof(addr_str) - 1);
+                ESP_LOGI(UDP_RECEIVER_TAG, "Received %d bytes from %s:", len, addr_str);
+                ESP_LOGI(UDP_RECEIVER_TAG, "%s", rx_buffer);
+
+				CmdProcess(rx_buffer[0]);
+                //message_t *msg = (message_t *)rx_buffer;
+                //ESP_LOGI(TAG, "Command: %c, Value: %d", msg->command, msg->value);
+            }
+        }
+
+        if (sock != -1) {
+            ESP_LOGE(TAG, "Shutting down socket and restarting...");
+            shutdown(sock, 0);
+            close(sock);
         }
     }
-
-    if (sock != -1) {
-        ESP_LOGE(TAG, "Shutting down socket and restarting...");
-        close(sock);
-    }
-    vTaskDelete(NULL);
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
